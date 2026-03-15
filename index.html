@@ -62,7 +62,7 @@ select, #searchInput { width: 100%; padding: 12px; background: #1a1a1a; border: 
 .list-logo { width: 50px; height: 50px; border-radius: 5px; object-fit: contain; background: #000; }
 .name { flex: 1; font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-#loader { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.7); z-index: 100; }
+#loader { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.7); z-index: 100; }
 .spinner { width: 40px; height: 40px; border: 4px solid #333; border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -140,43 +140,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     loadAllPlaylists();
     fetchBanglaNews();
-    loadAdAfterInteraction(); // Adsterra অ্যাড ফাংশন কল করা হলো
     setupRemoteControl();
 });
 
-// Adsterra Ad Function (৫ সেকেন্ড পর লোড হবে)
-function loadAdAfterInteraction() {
-    let adLoaded = false;
-    const adLoader = () => {
-        if (adLoaded) return;
-        adLoaded = true;
-        setTimeout(() => {
-            const adScript = document.createElement('script');
-            adScript.type = 'text/javascript';
-            adScript.src = 'https://pl28174272.effectivegatecpm.com/27/3c/04/273c0474fe4cdaf52aeda7349b12567a.js';
-            document.body.appendChild(adScript);
-            console.log("Ad Script Loaded");
-        }, 5000); // ৫ সেকেন্ড ওয়েট করবে
-        document.removeEventListener('click', adLoader);
-    };
-    document.addEventListener('click', adLoader);
-}
-
-// TV Remote Navigation
-function setupRemoteControl() {
-    document.addEventListener('keydown', (e) => {
-        const active = document.activeElement;
-        if (e.key === 'ArrowDown') {
-            const next = active.nextElementSibling;
-            if (next && next.classList.contains('row')) next.focus();
-        } else if (e.key === 'ArrowUp') {
-            const prev = active.previousElementSibling;
-            if (prev && prev.classList.contains('row')) prev.focus();
-        } else if (e.key === 'Enter') {
-            if (active.classList.contains('row')) active.click();
-        }
-    });
-}
+function showLoader() { loader.style.display = 'flex'; }
+function hideLoader() { loader.style.display = 'none'; }
 
 async function fetchBanglaNews() {
     try {
@@ -187,21 +155,22 @@ async function fetchBanglaNews() {
 }
 
 async function loadAllPlaylists() {
-    loader.style.display = 'flex';
+    showLoader();
     categorizedChannels = {};
     try {
         for (let p of playlists) {
             const res = await fetch(p.url);
+            if(!res.ok) continue;
             const text = await res.text();
             parseM3U(text);
         }
         populateCategoryDropdown();
         render();
-        loader.style.display = 'none';
-        // Auto play first channel
-        const firstCat = Object.keys(categorizedChannels).sort()[0];
-        if(firstCat && categorizedChannels[firstCat][0]) handleChannelClick(categorizedChannels[firstCat][0]);
-    } catch (error) { loader.style.display = 'none'; }
+        hideLoader();
+    } catch (error) { 
+        console.error("Playlist loading error", error);
+        hideLoader(); 
+    }
 }
 
 function parseM3U(data) {
@@ -255,14 +224,63 @@ function render() {
 }
 
 function handleChannelClick(ch) {
+    if(!ch || !ch.urls.length) return;
     currentChannel = ch;
     chNameDisplay.innerText = ch.name;
-    loader.style.display = 'flex';
+    showLoader();
+
+    // লোডার সেফটি: ৫ সেকেন্ড পর এরর হলেও লোডার সরিয়ে দেবে
+    const loaderSafety = setTimeout(hideLoader, 8000);
+
     if (Hls.isSupported()) {
-        hls.destroy(); hls = new Hls(); hls.loadSource(ch.urls[0]); hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => { loader.style.display = 'none'; player.play().catch(()=>{}); });
-    } else { video.src = ch.urls[0]; loader.style.display = 'none'; }
+        hls.destroy();
+        hls = new Hls();
+        hls.loadSource(ch.urls[0]);
+        hls.attachMedia(video);
+        
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            clearTimeout(loaderSafety);
+            hideLoader();
+            player.play().catch(() => {
+                // অটো-প্লে ব্লক হলে মিউট করে ট্রাই করবে
+                player.muted = true;
+                player.play();
+            });
+        });
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+            if (data.fatal) {
+                console.error("HLS Fatal Error", data);
+                clearTimeout(loaderSafety);
+                hideLoader();
+                // alert("এই চ্যানেলটি বর্তমানে আপনার ব্রাউজারে সাপোর্ট করছে না (CORS Issue)।");
+            }
+        });
+
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = ch.urls[0];
+        video.addEventListener('loadedmetadata', () => {
+            clearTimeout(loaderSafety);
+            hideLoader();
+            video.play();
+        });
+    }
     render();
+}
+
+function setupRemoteControl() {
+    document.addEventListener('keydown', (e) => {
+        const active = document.activeElement;
+        if (e.key === 'ArrowDown') {
+            const next = active.nextElementSibling;
+            if (next && next.classList.contains('row')) next.focus();
+        } else if (e.key === 'ArrowUp') {
+            const prev = active.previousElementSibling;
+            if (prev && prev.classList.contains('row')) prev.focus();
+        } else if (e.key === 'Enter') {
+            if (active.classList.contains('row')) active.click();
+        }
+    });
 }
 
 function switchTab(type, el) {
